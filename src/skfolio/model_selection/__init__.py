@@ -22,7 +22,7 @@ from skfolio.model_selection._online import (
     online_predict,
     online_score,
 )
-from skfolio.model_selection._validation import cross_val_predict
+from skfolio.model_selection._validation import batch_cross_val_predict, cross_val_predict
 from skfolio.model_selection._walk_forward import WalkForward
 
 __all__ = [
@@ -34,6 +34,7 @@ __all__ = [
     "OnlineGridSearch",
     "OnlineRandomizedSearch",
     "WalkForward",
+    "batch_cross_val_predict",
     "covariance_forecast_evaluation",
     "cross_val_predict",
     "online_covariance_forecast_evaluation",

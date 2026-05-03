@@ -140,6 +140,42 @@ def cross_val_predict(
     -------
     predictions : MultiPeriodPortfolio | Population
         This is the result of calling `predict`
+
+    Examples
+    --------
+    For complete tutorials on model selection, see the
+    :ref:`model_selection_examples` gallery.
+
+    >>> from skfolio import RiskMeasure
+    >>> from skfolio.datasets import load_sp500_dataset
+    >>> from skfolio.model_selection import (
+    ...     CombinatorialPurgedCV,
+    ...     WalkForward,
+    ...     cross_val_predict,
+    ... )
+    >>> from skfolio.optimization import MeanRisk, ObjectiveFunction
+    >>> from skfolio.preprocessing import prices_to_returns
+    >>>
+    >>> # Load historical prices and convert them to returns
+    >>> prices = load_sp500_dataset()
+    >>> X = prices_to_returns(prices)
+    >>>
+    >>> # Single-path walk-forward cross-validation — returns a MultiPeriodPortfolio
+    >>> model = MeanRisk(objective_function=ObjectiveFunction.MAXIMIZE_RATIO)
+    >>> cv = WalkForward(test_size=60, train_size=252)
+    >>> pred = cross_val_predict(model, X, cv=cv, portfolio_params=dict(name="max_sharpe"))
+    >>> print(pred.annualized_sharpe_ratio)
+    >>>
+    >>> # Multi-path combinatorial cross-validation — returns a Population of paths
+    >>> cv_comb = CombinatorialPurgedCV(n_folds=10, n_test_folds=2)
+    >>> population = cross_val_predict(
+    ...     MeanRisk(risk_measure=RiskMeasure.CVAR),
+    ...     X,
+    ...     cv=cv_comb,
+    ...     portfolio_params=dict(name="min_cvar"),
+    ... )
+    >>> print(len(population))
+    >>> print(population.summary())
     """
     if not _is_portfolio_optimization_estimator(estimator):
         raise TypeError(
@@ -291,6 +327,183 @@ def cross_val_predict(
         )
 
     return pred
+
+
+def batch_cross_val_predict(
+    estimators: (
+        list[BaseOptimization | Pipeline]
+        | dict[str, BaseOptimization | Pipeline]
+    ),
+    X: ArrayLike,
+    y: ArrayLike = None,
+    cv: (
+        sks.BaseCrossValidator
+        | BaseCombinatorialCV
+        | MultipleRandomizedCV
+        | int
+        | None
+    ) = None,
+    n_jobs: int | None = None,
+    verbose: int = 0,
+    params: dict | None = None,
+    pre_dispatch: str = "2*n_jobs",
+    column_indices: IntArray | None = None,
+    portfolio_params: dict | None = None,
+) -> (
+    list[MultiPeriodPortfolio | Population]
+    | dict[str, MultiPeriodPortfolio | Population]
+):
+    """Generate cross-validated `Portfolio` estimates for multiple estimators.
+
+    Runs :func:`~skfolio.model_selection.cross_val_predict` on each estimator in
+    `estimators`, sharing the same `X`, `cv`, and other parameters.  Estimators are
+    evaluated in parallel across the outer level (one job per estimator); each
+    individual cross-validation runs sequentially to avoid nested parallelism.
+
+    Parameters
+    ----------
+    estimators : list[BaseOptimization | Pipeline] | dict[str, BaseOptimization | Pipeline]
+        Portfolio optimization estimators (or pipelines whose last step is a portfolio
+        optimization estimator) to cross-validate.
+
+        * When a ``dict`` is provided, the keys are used as portfolio names in the
+          returned predictions.
+        * When a ``list`` is provided, portfolio names are derived from each
+          estimator's class name.  Duplicate class names are disambiguated by
+          appending a counter suffix (e.g. ``MeanRisk``, ``MeanRisk_1``).
+
+    X : array-like of shape (n_observations, n_assets)
+        Price returns of the assets.
+
+    y : array-like of shape (n_observations, n_targets), optional
+        Target data (optional). For example, the price returns of the factors.
+
+    cv : int | cross-validation generator, optional
+        Determines the cross-validation splitting strategy.
+        Possible inputs for cv are:
+
+        * None, to use the default 5-fold cross validation,
+        * int, to specify the number of folds in a `(Stratified)KFold`,
+        * `CV splitter`,
+        * An iterable that generates (train, test) splits as arrays of indices.
+
+    n_jobs : int, optional
+        Number of estimators to evaluate in parallel.
+        ``None`` means 1 unless in a ``joblib.parallel_backend`` context.
+        ``-1`` means using all processors.
+
+    verbose : int, default=0
+        The verbosity level.
+
+    params : dict, optional
+        Parameters to pass to the underlying estimators' ``fit`` and the CV
+        splitter.
+
+    pre_dispatch : int or str, default='2*n_jobs'
+        Controls the number of jobs that get dispatched during parallel
+        execution. Reducing this number can be useful to avoid an explosion of
+        memory consumption when more jobs get dispatched than CPUs can process.
+        This parameter can be:
+
+            * None, in which case all the jobs are immediately created and
+              spawned. Use this for lightweight and fast-running jobs, to avoid
+              delays due to on-demand spawning of the jobs.
+            * An int, giving the exact number of total jobs that are spawned.
+            * A str, giving an expression as a function of n_jobs, as in
+              '2*n_jobs'.
+
+    column_indices : ndarray, optional
+        Indices of the ``X`` columns to cross-validate on.
+
+    portfolio_params : dict, optional
+        Additional portfolio parameters passed to ``MultiPeriodPortfolio`` for
+        every estimator.  The ``name`` key is always overridden by the name
+        derived from the input structure (dict key or class name).
+
+    Returns
+    -------
+    predictions : list[MultiPeriodPortfolio | Population] | dict[str, MultiPeriodPortfolio | Population]
+        Cross-validated predictions for each estimator, in the same structure as
+        the input ``estimators``.
+
+        * When ``estimators`` is a ``list``, a ``list`` is returned preserving
+          the original order.
+        * When ``estimators`` is a ``dict``, a ``dict`` mapping the same keys to
+          predictions is returned.
+
+    Examples
+    --------
+    For complete tutorials on model selection, see the
+    :ref:`model_selection_examples` gallery.
+
+    >>> from skfolio import RiskMeasure
+    >>> from skfolio.datasets import load_sp500_dataset
+    >>> from skfolio.model_selection import WalkForward, batch_cross_val_predict
+    >>> from skfolio.optimization import (
+    ...     EqualWeighted,
+    ...     MeanRisk,
+    ...     ObjectiveFunction,
+    ... )
+    >>> from skfolio.preprocessing import prices_to_returns
+    >>>
+    >>> # Load historical prices and convert them to returns
+    >>> prices = load_sp500_dataset()
+    >>> X = prices_to_returns(prices)
+    >>>
+    >>> # Define a walk-forward cross-validation
+    >>> cv = WalkForward(test_size=60, train_size=252)
+    >>>
+    >>> # Compare three portfolio strategies in one call using a dict for named results
+    >>> predictions = batch_cross_val_predict(
+    ...     {
+    ...         "equal_weighted": EqualWeighted(),
+    ...         "max_sharpe": MeanRisk(
+    ...             objective_function=ObjectiveFunction.MAXIMIZE_RATIO
+    ...         ),
+    ...         "min_cvar": MeanRisk(risk_measure=RiskMeasure.CVAR),
+    ...     },
+    ...     X,
+    ...     cv=cv,
+    ... )
+    >>> for name, pred in predictions.items():
+    ...     print(name, pred.annualized_sharpe_ratio)
+    """
+    is_dict = isinstance(estimators, dict)
+    if is_dict:
+        names = list(estimators.keys())
+        estimator_list = list(estimators.values())
+    else:
+        estimator_list = list(estimators)
+        seen: dict[str, int] = {}
+        names = []
+        for est in estimator_list:
+            base = type(_get_last_step(est)).__name__
+            count = seen.get(base, 0)
+            seen[base] = count + 1
+            names.append(base if count == 0 else f"{base}_{count}")
+
+    base_portfolio_params = {} if portfolio_params is None else portfolio_params.copy()
+
+    parallel = skp.Parallel(n_jobs=n_jobs, verbose=verbose, pre_dispatch=pre_dispatch)
+    results = parallel(
+        skp.delayed(cross_val_predict)(
+            est,
+            X,
+            y=y,
+            cv=cv,
+            n_jobs=1,
+            verbose=verbose,
+            params=params,
+            pre_dispatch=pre_dispatch,
+            column_indices=column_indices,
+            portfolio_params={**base_portfolio_params, "name": name},
+        )
+        for est, name in zip(estimator_list, names, strict=True)
+    )
+
+    if is_dict:
+        return dict(zip(names, results, strict=True))
+    return results
 
 
 def _routing_enabled() -> bool:
