@@ -15,6 +15,7 @@ from skfolio.model_selection import (
     CombinatorialPurgedCV,
     MultipleRandomizedCV,
     WalkForward,
+    batch_cross_val_predict,
     cross_val_predict,
 )
 from skfolio.model_selection import _validation as msv
@@ -23,7 +24,7 @@ from skfolio.moments import (
     EWCovariance,
     ImpliedCovariance,
 )
-from skfolio.optimization import InverseVolatility, MeanRisk, ObjectiveFunction
+from skfolio.optimization import EqualWeighted, InverseVolatility, MeanRisk, ObjectiveFunction, RiskBudgeting
 from skfolio.pre_selection import SelectKExtremes
 from skfolio.prior import EmpiricalPrior
 
@@ -317,3 +318,99 @@ def test_fallback_previous_weights_propagation(X):
         assert_weights_dict_subset_equal(
             pred[i - 1].weights_dict, pred[i].previous_weights_dict
         )
+
+
+# ---------------------------------------------------------------------------
+# batch_cross_val_predict tests
+# ---------------------------------------------------------------------------
+
+
+def test_batch_cross_val_predict_dict_input(X):
+    cv = WalkForward(test_size=300, train_size=400)
+    estimators = {
+        "ew": EqualWeighted(),
+        "mr": MeanRisk(),
+    }
+
+    preds = batch_cross_val_predict(estimators, X, cv=cv)
+
+    assert isinstance(preds, dict)
+    assert list(preds.keys()) == ["ew", "mr"]
+    for name, pred in preds.items():
+        assert isinstance(pred, MultiPeriodPortfolio)
+        assert pred.name == name
+
+
+def test_batch_cross_val_predict_list_input(X):
+    cv = WalkForward(test_size=300, train_size=400)
+    estimators = [EqualWeighted(), MeanRisk(), RiskBudgeting()]
+
+    preds = batch_cross_val_predict(estimators, X, cv=cv)
+
+    assert isinstance(preds, list)
+    assert len(preds) == 3
+    assert preds[0].name == "EqualWeighted"
+    assert preds[1].name == "MeanRisk"
+    assert preds[2].name == "RiskBudgeting"
+    for pred in preds:
+        assert isinstance(pred, MultiPeriodPortfolio)
+
+
+def test_batch_cross_val_predict_list_deduplication(X):
+    cv = WalkForward(test_size=300, train_size=400)
+    estimators = [MeanRisk(), MeanRisk(), EqualWeighted()]
+
+    preds = batch_cross_val_predict(estimators, X, cv=cv)
+
+    assert preds[0].name == "MeanRisk"
+    assert preds[1].name == "MeanRisk_1"
+    assert preds[2].name == "EqualWeighted"
+
+
+def test_batch_cross_val_predict_matches_cross_val_predict(X):
+    cv = WalkForward(test_size=300, train_size=400)
+
+    ref_ew = cross_val_predict(EqualWeighted(), X, cv=cv)
+    ref_mr = cross_val_predict(MeanRisk(), X, cv=cv)
+
+    preds = batch_cross_val_predict(
+        {"ew": EqualWeighted(), "mr": MeanRisk()}, X, cv=cv
+    )
+
+    np.testing.assert_almost_equal(np.asarray(preds["ew"]), np.asarray(ref_ew))
+    np.testing.assert_almost_equal(np.asarray(preds["mr"]), np.asarray(ref_mr))
+
+
+def test_batch_cross_val_predict_combinatorial_cv(X):
+    cv = CombinatorialPurgedCV()
+    estimators = {"ew": EqualWeighted(), "mr": MeanRisk()}
+
+    preds = batch_cross_val_predict(estimators, X, cv=cv)
+
+    assert isinstance(preds, dict)
+    for name, pred in preds.items():
+        assert isinstance(pred, Population)
+        assert len(pred) == cv.n_test_paths
+        for p in pred:
+            assert isinstance(p, MultiPeriodPortfolio)
+
+
+def test_batch_cross_val_predict_portfolio_params_name_override(X):
+    cv = WalkForward(test_size=300, train_size=400)
+
+    preds = batch_cross_val_predict(
+        {"ew": EqualWeighted(), "mr": MeanRisk()},
+        X,
+        cv=cv,
+        portfolio_params={"name": "should_be_overridden"},
+    )
+
+    assert preds["ew"].name == "ew"
+    assert preds["mr"].name == "mr"
+
+
+def test_batch_cross_val_predict_non_portfolio_estimator_raises(X):
+    cv = WalkForward(test_size=300, train_size=400)
+
+    with pytest.raises(TypeError, match=r"skfolio's `cross_val_predict` only supports"):
+        batch_cross_val_predict({"bad": ImpliedCovariance()}, X, cv=cv)
